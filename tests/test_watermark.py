@@ -53,7 +53,7 @@ class TestWatermarkEngine(unittest.TestCase):
         for img_size, logo_size in test_cases:
             img_w, img_h = img_size
             logo_w, logo_h = logo_size
-            pos_x, pos_y = compute_logo_position(img_size, logo_size)
+            pos_x, pos_y = compute_logo_position(img_size, logo_size, position="bottom_right")
 
             # Должен быть в правом нижнем углу
             self.assertGreater(pos_x, img_w / 2)
@@ -62,6 +62,31 @@ class TestWatermarkEngine(unittest.TestCase):
             # Не должен выходить за пределы изображения
             self.assertLessEqual(pos_x + logo_w, img_w)
             self.assertLessEqual(pos_y + logo_h, img_h)
+
+    def test_all_four_corners(self):
+        """Проверка координат для всех 4 углов."""
+        img_size = (1000, 1000)
+        logo_size = (100, 50)
+
+        # 1. bottom_right
+        x, y = compute_logo_position(img_size, logo_size, position="bottom_right")
+        self.assertGreater(x, 500)
+        self.assertGreater(y, 500)
+
+        # 2. bottom_left
+        x, y = compute_logo_position(img_size, logo_size, position="bottom_left")
+        self.assertLess(x, 500)
+        self.assertGreater(y, 500)
+
+        # 3. top_left
+        x, y = compute_logo_position(img_size, logo_size, position="top_left")
+        self.assertLess(x, 500)
+        self.assertLess(y, 500)
+
+        # 4. top_right
+        x, y = compute_logo_position(img_size, logo_size, position="top_right")
+        self.assertGreater(x, 500)
+        self.assertLess(y, 500)
 
     def test_color_correction_rgb_and_rgba(self):
         """Проверка автоцветокоррекции для RGB и RGBA форматов."""

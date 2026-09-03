@@ -29,12 +29,20 @@ class Database:
                     has_custom_logo INTEGER DEFAULT 0,
                     logo_scale TEXT DEFAULT 'medium',
                     logo_opacity INTEGER DEFAULT 100,
+                    logo_position TEXT DEFAULT 'bottom_right',
                     auto_color INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
+            # Миграция для существующей БД, если колонка еще не была добавлена
+            try:
+                await db.execute(
+                    "ALTER TABLE user_settings ADD COLUMN logo_position TEXT DEFAULT 'bottom_right'"
+                )
+            except Exception:
+                pass
             await db.commit()
 
     async def get_user_settings(self, user_id: int) -> UserSettings:
@@ -50,19 +58,21 @@ class Database:
                 # Создаем настройки по умолчанию
                 await db.execute(
                     """
-                    INSERT INTO user_settings (user_id, has_custom_logo, logo_scale, logo_opacity, auto_color)
-                    VALUES (?, 0, 'medium', 100, 1)
+                    INSERT INTO user_settings (user_id, has_custom_logo, logo_scale, logo_opacity, logo_position, auto_color)
+                    VALUES (?, 0, 'medium', 100, 'bottom_right', 1)
                     """,
                     (user_id,),
                 )
                 await db.commit()
                 return UserSettings(user_id=user_id)
 
+            keys = row.keys()
             return UserSettings(
                 user_id=row["user_id"],
                 has_custom_logo=bool(row["has_custom_logo"]),
                 logo_scale=row["logo_scale"],
                 logo_opacity=row["logo_opacity"],
+                logo_position=row["logo_position"] if "logo_position" in keys and row["logo_position"] else "bottom_right",
                 auto_color=bool(row["auto_color"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
@@ -70,7 +80,7 @@ class Database:
 
     async def update_settings(self, user_id: int, **kwargs) -> UserSettings:
         """Обновляет указанные параметры пользователя."""
-        allowed_fields = {"has_custom_logo", "logo_scale", "logo_opacity", "auto_color"}
+        allowed_fields = {"has_custom_logo", "logo_scale", "logo_opacity", "logo_position", "auto_color"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:

@@ -27,10 +27,11 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(settings.has_custom_logo)
         self.assertEqual(settings.logo_scale, "medium")
         self.assertEqual(settings.logo_opacity, 100)
+        self.assertEqual(settings.logo_position, "bottom_right")
         self.assertTrue(settings.auto_color)
 
     async def test_update_settings(self):
-        """Проверка изменения отдельных настроек (масштаб, автоцветокор)."""
+        """Проверка изменения отдельных настроек (масштаб, угол, автоцветокор)."""
         await self.database.get_user_settings(user_id=54321)
 
         updated = await self.database.update_settings(
@@ -38,15 +39,17 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
             auto_color=False,
             logo_scale="large",
             logo_opacity=80,
+            logo_position="top_left",
         )
         self.assertFalse(updated.auto_color)
         self.assertEqual(updated.logo_scale, "large")
         self.assertEqual(updated.logo_opacity, 80)
+        self.assertEqual(updated.logo_position, "top_left")
 
         # Проверка повторного чтения из БД
         reloaded = await self.database.get_user_settings(user_id=54321)
         self.assertFalse(reloaded.auto_color)
-        self.assertEqual(reloaded.logo_scale, "large")
+        self.assertEqual(reloaded.logo_position, "top_left")
 
     async def test_save_and_delete_logo(self):
         """Проверка сохранения и удаления кастомного логотипа пользователя."""

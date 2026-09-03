@@ -14,6 +14,7 @@ from src.database.db import db
 from src.handlers.common import router as common_router
 from src.handlers.image import router as image_router
 from src.handlers.settings import router as settings_router
+from src.middlewares.album import AlbumMiddleware
 
 
 async def set_bot_commands(bot: Bot) -> None:
@@ -50,6 +51,9 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
+
+    # Регистрация middleware для альбомов
+    image_router.message.middleware(AlbumMiddleware())
 
     # Регистрация роутеров
     dp.include_router(common_router)

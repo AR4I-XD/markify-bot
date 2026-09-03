@@ -14,6 +14,7 @@ SCALE_PRESETS = {
 }
 
 LogoScale = Literal["small", "medium", "large"]
+LogoPosition = Literal["bottom_right", "bottom_left", "top_right", "top_left"]
 
 
 def compute_logo_dimensions(
@@ -48,12 +49,17 @@ def compute_logo_dimensions(
 def compute_logo_position(
     image_size: Tuple[int, int],
     logo_size: Tuple[int, int],
+    position: str = "bottom_right",
     padding_ratio: float = 0.025,
     min_padding: int = 12,
 ) -> Tuple[int, int]:
-    """Вычисляет координаты (x, y) для размещения логотипа в правом нижнем углу.
+    """Вычисляет координаты (x, y) для размещения логотипа в указанном углу.
 
-    Отступ (padding) также рассчитывается адаптивно от размера кадра.
+    Поддерживаемые углы:
+    - 'bottom_right' (правый нижний) - по умолчанию
+    - 'bottom_left'  (левый нижний)
+    - 'top_right'    (правый верхний)
+    - 'top_left'     (левый верхний)
     """
     img_w, img_h = image_size
     logo_w, logo_h = logo_size
@@ -61,10 +67,20 @@ def compute_logo_position(
     min_dim = min(img_w, img_h)
     padding = max(min_padding, int(min_dim * padding_ratio))
 
-    pos_x = img_w - logo_w - padding
-    pos_y = img_h - logo_h - padding
+    if position == "bottom_left":
+        pos_x = padding
+        pos_y = img_h - logo_h - padding
+    elif position == "top_right":
+        pos_x = img_w - logo_w - padding
+        pos_y = padding
+    elif position == "top_left":
+        pos_x = padding
+        pos_y = padding
+    else:  # bottom_right
+        pos_x = img_w - logo_w - padding
+        pos_y = img_h - logo_h - padding
 
-    # Страховка от выхода за границы на очень узких/маленьких изображениях
+    # Страховка от выхода за границы
     pos_x = max(0, pos_x)
     pos_y = max(0, pos_y)
 
@@ -99,6 +115,7 @@ def process_image(
     auto_color: bool = True,
     scale: Union[LogoScale, float] = "medium",
     opacity: int = 100,
+    position: str = "bottom_right",
     output_format: Optional[str] = None,
 ) -> io.BytesIO:
     """Главный пайплайн обработки изображения (Zero-Storage, все вычисления в памяти):
@@ -106,7 +123,7 @@ def process_image(
     1. Загрузка исходного фото и логотипа из потоков байт.
     2. Коррекция EXIF-ориентации (предотвращает переворот фото с телефонов).
     3. Автоцветокоррекция (если включена).
-    4. Адаптивное масштабирование логотипа и расчет координат правого нижнего угла.
+    4. Адаптивное масштабирование логотипа и расчет координат указанного угла.
     5. Наложение логотипа через альфа-композитинг.
     6. Экспорт в BytesIO с сохранением максимального качества.
     """
@@ -150,7 +167,7 @@ def process_image(
 
     # 5. Расчет адаптивного размера и координат
     target_logo_size = compute_logo_dimensions(base_image.size, logo_image.size, scale_ratio)
-    pos_x, pos_y = compute_logo_position(base_image.size, target_logo_size)
+    pos_x, pos_y = compute_logo_position(base_image.size, target_logo_size, position=position)
 
     # 6. Подготовка логотипа
     prepared_logo = prepare_logo(logo_image, target_logo_size, opacity)

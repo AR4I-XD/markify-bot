@@ -30,19 +30,22 @@ class Database:
                     logo_scale TEXT DEFAULT 'medium',
                     logo_opacity INTEGER DEFAULT 100,
                     logo_position TEXT DEFAULT 'bottom_right',
+                    process_mode TEXT DEFAULT 'auto',
                     auto_color INTEGER DEFAULT 1,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """
             )
-            # Миграция для существующей БД, если колонка еще не была добавлена
-            try:
-                await db.execute(
-                    "ALTER TABLE user_settings ADD COLUMN logo_position TEXT DEFAULT 'bottom_right'"
-                )
-            except Exception:
-                pass
+            # Миграция для существующей БД
+            for col, col_type in [
+                ("logo_position", "TEXT DEFAULT 'bottom_right'"),
+                ("process_mode", "TEXT DEFAULT 'auto'"),
+            ]:
+                try:
+                    await db.execute(f"ALTER TABLE user_settings ADD COLUMN {col} {col_type}")
+                except Exception:
+                    pass
             await db.commit()
 
     async def get_user_settings(self, user_id: int) -> UserSettings:
@@ -58,8 +61,8 @@ class Database:
                 # Создаем настройки по умолчанию
                 await db.execute(
                     """
-                    INSERT INTO user_settings (user_id, has_custom_logo, logo_scale, logo_opacity, logo_position, auto_color)
-                    VALUES (?, 0, 'medium', 100, 'bottom_right', 1)
+                    INSERT INTO user_settings (user_id, has_custom_logo, logo_scale, logo_opacity, logo_position, process_mode, auto_color)
+                    VALUES (?, 0, 'medium', 100, 'bottom_right', 'auto', 1)
                     """,
                     (user_id,),
                 )
@@ -73,6 +76,7 @@ class Database:
                 logo_scale=row["logo_scale"],
                 logo_opacity=row["logo_opacity"],
                 logo_position=row["logo_position"] if "logo_position" in keys and row["logo_position"] else "bottom_right",
+                process_mode=row["process_mode"] if "process_mode" in keys and row["process_mode"] else "auto",
                 auto_color=bool(row["auto_color"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
@@ -80,7 +84,7 @@ class Database:
 
     async def update_settings(self, user_id: int, **kwargs) -> UserSettings:
         """Обновляет указанные параметры пользователя."""
-        allowed_fields = {"has_custom_logo", "logo_scale", "logo_opacity", "logo_position", "auto_color"}
+        allowed_fields = {"has_custom_logo", "logo_scale", "logo_opacity", "logo_position", "process_mode", "auto_color"}
         updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
         if not updates:

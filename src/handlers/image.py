@@ -1,22 +1,26 @@
-"""Обработчик входящих фотографий, альбомов и документов (Zero-Storage)."""
+"""Обработчик входящих фотографий, альбомов и документов с пакетной очередью (Zero-Storage)."""
 
 import asyncio
 import io
 from typing import List, Optional
 from aiogram import Router, F, Bot
 from aiogram.enums import ChatAction
-from aiogram.types import Message, BufferedInputFile, InputMediaDocument
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaDocument
 
 from src.database.db import db
+from src.keyboards.inline import get_batch_confirm_kb
+from src.services.batch_queue import batch_queue
 from src.services.watermark import process_image
 
 router = Router(name="image_processing")
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 MAX_MEDIA_GROUP_SIZE = 10  # Ограничение Telegram Bot API на размер медиагруппы
+CONCURRENCY_LIMIT = 2     # Ограничение параллельных задач для защиты оперативной памяти (100+ фото)
 
 
-async def process_single_image(
+async def process_single_image_with_semaphore(
+    sem: asyncio.Semaphore,
     bot: Bot,
     file_id: str,
     logo_bytes: bytes,
@@ -26,71 +30,90 @@ async def process_single_image(
     position: str,
     original_filename: Optional[str] = None,
 ) -> tuple[str, bytes]:
-    """Загружает и обрабатывает одно изображение в памяти, возвращая имя файла и байты."""
-    in_buffer = io.BytesIO()
-    await bot.download(file_id, destination=in_buffer)
-    image_bytes = in_buffer.getvalue()
-    in_buffer.close()
+    """Обрабатывает одно изображение с ограничением одновременных задач в памяти."""
+    async with sem:
+        in_buffer = io.BytesIO()
+        await bot.download(file_id, destination=in_buffer)
+        image_bytes = in_buffer.getvalue()
+        in_buffer.close()
 
-    # Определение формата вывода
-    filename = (original_filename or "").lower()
-    if filename.endswith(".png"):
-        out_fmt = "PNG"
-        ext = ".png"
-    else:
-        out_fmt = "JPEG"
-        ext = ".jpg"
+        filename = (original_filename or "").lower()
+        out_fmt = "PNG" if filename.endswith(".png") else "JPEG"
+        ext = ".png" if out_fmt == "PNG" else ".jpg"
 
-    result_buffer = await asyncio.to_thread(
-        process_image,
-        image_input=image_bytes,
-        logo_input=logo_bytes,
-        auto_color=auto_color,
-        scale=scale,
-        opacity=opacity,
-        position=position,
-        output_format=out_fmt,
-    )
-    result_bytes = result_buffer.getvalue()
-    result_buffer.close()
+        result_buffer = await asyncio.to_thread(
+            process_image,
+            image_input=image_bytes,
+            logo_input=logo_bytes,
+            auto_color=auto_color,
+            scale=scale,
+            opacity=opacity,
+            position=position,
+            output_format=out_fmt,
+        )
+        result_bytes = result_buffer.getvalue()
+        result_buffer.close()
 
-    final_name = f"markify_{filename}" if filename else f"markified{ext}"
-    return final_name, result_bytes
+        final_name = f"markify_{filename}" if filename else f"markified{ext}"
+        return final_name, result_bytes
 
 
 async def send_processed_documents(
-    message: Message,
+    bot: Bot,
+    chat_id: int,
     processed_items: List[tuple[str, bytes]],
 ):
-    """Отправляет обработанные изображения строго файлами (документами) без сжатия.
-
-    Если элементов больше 10, разбивает их на допустимые группы Telegram (2..10).
-    """
+    """Отправляет готовые файлы пачками по 10 штук без сжатия."""
     if not processed_items:
         return
 
     if len(processed_items) == 1:
         filename, file_bytes = processed_items[0]
         output_file = BufferedInputFile(file_bytes, filename=filename)
-        await message.reply_document(document=output_file)
+        await bot.send_document(chat_id=chat_id, document=output_file)
         return
 
-    # Разбивка на чанки до 10 файлов
     for i in range(0, len(processed_items), MAX_MEDIA_GROUP_SIZE):
         chunk = processed_items[i : i + MAX_MEDIA_GROUP_SIZE]
         if len(chunk) == 1:
             filename, file_bytes = chunk[0]
             output_file = BufferedInputFile(file_bytes, filename=filename)
-            await message.answer_document(document=output_file)
+            await bot.send_document(chat_id=chat_id, document=output_file)
         else:
             media_group = [
                 InputMediaDocument(media=BufferedInputFile(f_bytes, filename=fname))
                 for fname, f_bytes in chunk
             ]
-            await message.answer_media_group(media=media_group)
-        # Небольшая пауза между группами для соблюдения лимитов Telegram
+            await bot.send_media_group(chat_id=chat_id, media=media_group)
+        # Пауза для защиты от лимитов отправки Telegram
         if i + MAX_MEDIA_GROUP_SIZE < len(processed_items):
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.6)
+
+
+async def update_or_send_queue_card(message: Message, user_id: int, count: int):
+    """Отображает или обновляет сообщение со статусом очереди."""
+    text = (
+        f"📥 <b>В очереди на обработку: {count} фото</b>\n\n"
+        "Отправьте еще или нажмите кнопку для старта:"
+    )
+    kb = get_batch_confirm_kb(count)
+    status_msg_id = batch_queue.get_status_message_id(user_id)
+
+    if status_msg_id:
+        try:
+            await message.bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=status_msg_id,
+                text=text,
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+
+    new_msg = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    batch_queue.set_status_message(user_id, new_msg.message_id)
 
 
 @router.message(F.photo)
@@ -99,51 +122,30 @@ async def handle_incoming_photo(
     bot: Bot,
     album: Optional[List[Message]] = None,
 ):
-    """Обработка фотографий (одиночных или альбомов) с гарантированной отправкой файлами."""
+    """Прием фотографий (одиночных или альбомов)."""
     user_id = message.from_user.id
     settings = await db.get_user_settings(user_id)
-    logo_bytes = await db.get_effective_logo_bytes(user_id)
 
-    # 1. Альбом фотографий
+    # Собираем список файлов
+    incoming_items: List[tuple[str, str]] = []
     if album and len(album) > 1:
-        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        try:
-            tasks = [
-                process_single_image(
-                    bot=bot,
-                    file_id=msg.photo[-1].file_id,
-                    logo_bytes=logo_bytes,
-                    auto_color=settings.auto_color,
-                    scale=settings.logo_scale,
-                    opacity=settings.logo_opacity,
-                    position=settings.logo_position,
-                    original_filename=f"photo_{idx + 1}.jpg",
-                )
-                for idx, msg in enumerate(album)
-                if msg.photo
-            ]
-            processed_items = await asyncio.gather(*tasks)
-            await send_processed_documents(message, processed_items)
-        except Exception as e:
-            await message.reply(f"Ошибка при обработке альбома: {e}")
+        for idx, msg in enumerate(album):
+            if msg.photo:
+                incoming_items.append((msg.photo[-1].file_id, f"photo_{idx + 1}.jpg"))
+    elif message.photo:
+        incoming_items.append((message.photo[-1].file_id, "photo.jpg"))
+
+    if not incoming_items:
         return
 
-    # 2. Одиночное фото
-    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-    try:
-        filename, photo_bytes = await process_single_image(
-            bot=bot,
-            file_id=message.photo[-1].file_id,
-            logo_bytes=logo_bytes,
-            auto_color=settings.auto_color,
-            scale=settings.logo_scale,
-            opacity=settings.logo_opacity,
-            position=settings.logo_position,
-            original_filename="photo.jpg",
-        )
-        await send_processed_documents(message, [(filename, photo_bytes)])
-    except Exception as e:
-        await message.reply(f"Ошибка при обработке: {e}")
+    # Если включен режим «По подтверждению»
+    if settings.process_mode == "confirm":
+        total_count = batch_queue.add_items(user_id, incoming_items, message.chat.id)
+        await update_or_send_queue_card(message, user_id, total_count)
+        return
+
+    # Режим «Сразу»
+    await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
 
 
 @router.message(F.document)
@@ -152,56 +154,119 @@ async def handle_incoming_document(
     bot: Bot,
     album: Optional[List[Message]] = None,
 ):
-    """Обработка несжатых изображений (документов), включая альбомы документов."""
-    document = message.document
-    filename = (document.file_name or "").lower()
-    mime_type = (document.mime_type or "").lower()
-
-    is_image = mime_type.startswith("image/") or any(filename.endswith(ext) for ext in IMAGE_EXTENSIONS)
-    if not is_image:
-        return
-
+    """Прием несжатых документов-изображений."""
     user_id = message.from_user.id
     settings = await db.get_user_settings(user_id)
-    logo_bytes = await db.get_effective_logo_bytes(user_id)
 
-    # Альбом документов
+    incoming_items: List[tuple[str, str]] = []
     if album and len(album) > 1:
-        await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        try:
-            tasks = [
-                process_single_image(
-                    bot=bot,
-                    file_id=msg.document.file_id,
-                    logo_bytes=logo_bytes,
-                    auto_color=settings.auto_color,
-                    scale=settings.logo_scale,
-                    opacity=settings.logo_opacity,
-                    position=settings.logo_position,
-                    original_filename=msg.document.file_name or f"doc_{idx + 1}.jpg",
-                )
-                for idx, msg in enumerate(album)
-                if msg.document
-            ]
-            processed_items = await asyncio.gather(*tasks)
-            await send_processed_documents(message, processed_items)
-        except Exception as e:
-            await message.reply(f"Ошибка при обработке файлов: {e}")
+        for idx, msg in enumerate(album):
+            if msg.document:
+                fname = msg.document.file_name or f"doc_{idx + 1}.jpg"
+                incoming_items.append((msg.document.file_id, fname))
+    elif message.document:
+        fname = (message.document.file_name or "").lower()
+        mime = (message.document.mime_type or "").lower()
+        if mime.startswith("image/") or any(fname.endswith(ext) for ext in IMAGE_EXTENSIONS):
+            incoming_items.append((message.document.file_id, message.document.file_name or "photo.jpg"))
+
+    if not incoming_items:
         return
 
-    # Одиночный документ
-    await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.UPLOAD_DOCUMENT)
+    if settings.process_mode == "confirm":
+        total_count = batch_queue.add_items(user_id, incoming_items, message.chat.id)
+        await update_or_send_queue_card(message, user_id, total_count)
+        return
+
+    await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+
+
+async def process_and_dispatch_items(
+    bot: Bot,
+    chat_id: int,
+    user_id: int,
+    items: List[tuple[str, str]],
+    status_message: Optional[Message] = None,
+):
+    """Главный конвейер обработки пачки фото с контролем памяти и отправкой без сжатия."""
+    settings = await db.get_user_settings(user_id)
+    logo_bytes = await db.get_effective_logo_bytes(user_id)
+    sem = asyncio.Semaphore(CONCURRENCY_LIMIT)
+
+    total = len(items)
+    processed_items: List[tuple[str, bytes]] = []
+
+    await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+
+    # Обработка с контролем прогресса для больших пачек (100+ фото)
+    for idx, (file_id, fname) in enumerate(items, 1):
+        if status_message and (idx % 10 == 0 or idx == total or total <= 5):
+            try:
+                await status_message.edit_text(
+                    f"⚙️ <b>Обработка: {idx} / {total}</b>...",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        try:
+            item_res = await process_single_image_with_semaphore(
+                sem=sem,
+                bot=bot,
+                file_id=file_id,
+                logo_bytes=logo_bytes,
+                auto_color=settings.auto_color,
+                scale=settings.logo_scale,
+                opacity=settings.logo_opacity,
+                position=settings.logo_position,
+                original_filename=fname,
+            )
+            processed_items.append(item_res)
+        except Exception as e:
+            # Не прерываем весь батч при ошибке в одном поврежденном файле
+            pass
+
+    # Отправка результатов
+    await send_processed_documents(bot, chat_id, processed_items)
+
+    if status_message:
+        try:
+            await status_message.delete()
+        except Exception:
+            pass
+
+
+@router.callback_query(F.data == "batch:start")
+async def cb_start_batch(callback: CallbackQuery, bot: Bot):
+    """Запуск обработки очереди пользователем."""
+    user_id = callback.from_user.id
+    items = batch_queue.pop_all(user_id)
+
+    if not items:
+        await callback.answer("Очередь пуста.", show_alert=True)
+        return
+
+    await callback.answer("Начинаю обработку...")
+    status_msg = await callback.message.edit_text(
+        f"⚙️ <b>Обработка: 0 / {len(items)}</b>...",
+        parse_mode="HTML",
+    )
+    await process_and_dispatch_items(
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        user_id=user_id,
+        items=items,
+        status_message=status_msg,
+    )
+
+
+@router.callback_query(F.data == "batch:clear")
+async def cb_clear_batch(callback: CallbackQuery):
+    """Очистка очереди пользователем."""
+    user_id = callback.from_user.id
+    batch_queue.clear(user_id)
     try:
-        filename, doc_bytes = await process_single_image(
-            bot=bot,
-            file_id=document.file_id,
-            logo_bytes=logo_bytes,
-            auto_color=settings.auto_color,
-            scale=settings.logo_scale,
-            opacity=settings.logo_opacity,
-            position=settings.logo_position,
-            original_filename=document.file_name,
-        )
-        await send_processed_documents(message, [(filename, doc_bytes)])
-    except Exception as e:
-        await message.reply(f"Ошибка при обработке файла: {e}")
+        await callback.message.edit_text("Очередь очищена.")
+    except Exception:
+        pass
+    await callback.answer("Очередь очищена.")

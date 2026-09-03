@@ -36,11 +36,22 @@ def get_main_menu_kb() -> InlineKeyboardMarkup:
 def get_settings_kb(settings: UserSettings) -> InlineKeyboardMarkup:
     """Лаконичное меню настроек."""
     color_status = "Вкл" if settings.auto_color else "Выкл"
+    mode_status = "⚡ Сразу" if settings.process_mode == "auto" else "⏳ По кнопке"
     pos_label = POSITION_NAMES.get(settings.logo_position, "↘️ Правый нижний")
     scale_label = SCALE_NAMES.get(settings.logo_scale, "18%")
     opacity_label = f"{settings.logo_opacity}%"
 
     keyboard = [
+        [
+            InlineKeyboardButton(
+                text=f"Режим: {mode_status}",
+                callback_data="toggle:processmode",
+            ),
+            InlineKeyboardButton(
+                text=f"Автокоррекция: {color_status}",
+                callback_data="toggle:autocolor",
+            ),
+        ],
         [
             InlineKeyboardButton(
                 text=f"Угол: {pos_label}",
@@ -56,12 +67,6 @@ def get_settings_kb(settings: UserSettings) -> InlineKeyboardMarkup:
                 text=f"Прозрачность: {opacity_label}",
                 callback_data="cycle:opacity",
             ),
-        ],
-        [
-            InlineKeyboardButton(
-                text=f"Автокоррекция: {color_status}",
-                callback_data="toggle:autocolor",
-            )
         ],
         [
             InlineKeyboardButton(text="🎨 Загрузить лого", callback_data="logo:upload"),
@@ -82,6 +87,26 @@ def get_settings_kb(settings: UserSettings) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_batch_confirm_kb(count: int) -> InlineKeyboardMarkup:
+    """Клавиатура подтверждения обработки очереди фото."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"🚀 Обработать ({count} фото)",
+                    callback_data="batch:start",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="🗑 Очистить очередь",
+                    callback_data="batch:clear",
+                )
+            ],
+        ]
+    )
 
 
 def get_cancel_upload_kb() -> InlineKeyboardMarkup:

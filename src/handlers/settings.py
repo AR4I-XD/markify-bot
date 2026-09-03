@@ -76,6 +76,16 @@ async def cb_settings(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data == "toggle:processmode")
+async def cb_toggle_processmode(callback: CallbackQuery):
+    settings = await db.get_user_settings(callback.from_user.id)
+    new_mode = "confirm" if settings.process_mode == "auto" else "auto"
+    updated_settings = await db.update_settings(callback.from_user.id, process_mode=new_mode)
+    await send_or_edit_settings(callback, updated_settings)
+    mode_text = "По подтверждению (кнопкой)" if new_mode == "confirm" else "Сразу при отправке"
+    await callback.answer(f"Режим: {mode_text}")
+
+
 @router.callback_query(F.data == "cycle:position")
 async def cb_cycle_position(callback: CallbackQuery):
     settings = await db.get_user_settings(callback.from_user.id)

@@ -1,0 +1,10 @@
+services:
+  markify-bot:
+    build: .
+    container_name: markify-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Монтируем локальную директорию data для сохранения БД и логотипов
+      - ./data:/app/data

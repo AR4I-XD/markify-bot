@@ -90,27 +90,24 @@ async def send_processed_documents(
             await asyncio.sleep(0.6)
 
 
-async def update_bottom_keyboard_only(message: Message, user_id: int, count: int):
-    """Активирует/обновляет только нижнюю панель кнопок без лишних сообщений в чате."""
+async def update_bottom_queue_menu(message: Message, user_id: int, count: int):
+    """Обновляет нижнюю панель кнопок и держит единственное лаконичное сообщение внизу."""
     reply_kb = get_batch_reply_kb(count)
-
-    # Удаляем любые старые статусные сообщения, если они были
     prev_msg_id = batch_queue.get_status_message_id(user_id)
-    if prev_msg_id:
+
+    # Отправляем одно единственное сообщение с закреплением нижней панели
+    new_msg = await message.answer(
+        f"В очереди: {count} фото",
+        reply_markup=reply_kb,
+    )
+    batch_queue.set_status_message(user_id, new_msg.message_id)
+
+    # Удаляем предыдущее сообщение со старым количеством, чтобы чат не засорялся
+    if prev_msg_id and prev_msg_id != new_msg.message_id:
         try:
             await message.bot.delete_message(chat_id=message.chat.id, message_id=prev_msg_id)
         except Exception:
             pass
-        batch_queue.set_status_message(user_id, 0)
-
-    # Для установки/обновления нижней панели Telegram требует отправить reply_markup.
-    # Мы отправляем невидимое/короткое сервисное уведомление и сразу удаляем его:
-    # нижняя панель в Telegram остается активной, а история чата чистой!
-    try:
-        temp_msg = await message.answer("⏳", reply_markup=reply_kb)
-        await temp_msg.delete()
-    except Exception:
-        pass
 
 
 @router.message(F.photo)
@@ -134,10 +131,10 @@ async def handle_incoming_photo(
     if not incoming_items:
         return
 
-    # 1. Режим «По подтверждению»: только нижнее меню
+    # 1. Режим «По подтверждению»: обновляем меню снизу
     if settings.process_mode == "confirm":
         total_count = batch_queue.add_items(user_id, incoming_items, message.chat.id)
-        await update_bottom_keyboard_only(message, user_id, total_count)
+        await update_bottom_queue_menu(message, user_id, total_count)
         return
 
     # 2. Режим «Сразу»: мгновенное уведомление с автоудалением
@@ -178,7 +175,7 @@ async def handle_incoming_document(
 
     if settings.process_mode == "confirm":
         total_count = batch_queue.add_items(user_id, incoming_items, message.chat.id)
-        await update_bottom_keyboard_only(message, user_id, total_count)
+        await update_bottom_queue_menu(message, user_id, total_count)
         return
 
     # Режим «Сразу»
@@ -259,6 +256,14 @@ async def handle_reply_batch_start(message: Message, bot: Bot):
     except Exception:
         pass
 
+    # Удаляем статусное сообщение очереди "В очереди: N фото"
+    prev_msg_id = batch_queue.get_status_message_id(user_id)
+    if prev_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prev_msg_id)
+        except Exception:
+            pass
+
     if not items:
         await message.answer("Очередь пуста.", reply_markup=get_remove_kb())
         return
@@ -278,7 +283,7 @@ async def handle_reply_batch_start(message: Message, bot: Bot):
 
 
 @router.message(F.text == "🗑 Очистить очередь")
-async def handle_reply_batch_clear(message: Message):
+async def handle_reply_batch_clear(message: Message, bot: Bot):
     """Очистка очереди по нажатию нижней кнопки."""
     user_id = message.from_user.id
     batch_queue.clear(user_id)
@@ -286,6 +291,13 @@ async def handle_reply_batch_clear(message: Message):
         await message.delete()
     except Exception:
         pass
+
+    prev_msg_id = batch_queue.get_status_message_id(user_id)
+    if prev_msg_id:
+        try:
+            await bot.delete_message(chat_id=message.chat.id, message_id=prev_msg_id)
+        except Exception:
+            pass
 
     temp = await message.answer("Очередь очищена.", reply_markup=get_remove_kb())
     await asyncio.sleep(2)

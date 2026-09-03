@@ -9,6 +9,7 @@ from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaD
 
 from src.database.db import db
 from src.keyboards.inline import get_batch_confirm_kb
+from src.keyboards.reply import get_batch_reply_kb, get_remove_kb
 from src.services.batch_queue import batch_queue
 from src.services.watermark import process_image
 
@@ -91,29 +92,34 @@ async def send_processed_documents(
 
 
 async def update_or_send_queue_card(message: Message, user_id: int, count: int):
-    """Отображает или обновляет сообщение со статусом очереди."""
-    text = (
-        f"📥 <b>В очереди на обработку: {count} фото</b>\n\n"
-        "Отправьте еще или нажмите кнопку для старта:"
-    )
-    kb = get_batch_confirm_kb(count)
-    status_msg_id = batch_queue.get_status_message_id(user_id)
+    """Отображает обновленный статус очереди всегда в самом низу чата
 
-    if status_msg_id:
+    и обновляет закрепленную кнопку в поле ввода.
+    """
+    text = f"📥 <b>В очереди: {count} фото</b>\nНажмите кнопку ниже для старта:"
+    inline_kb = get_batch_confirm_kb(count)
+    reply_kb = get_batch_reply_kb(count)
+
+    # Удаляем предыдущее сообщение с кнопкой из чата, чтобы оно не висело выше новых фото
+    prev_msg_id = batch_queue.get_status_message_id(user_id)
+    if prev_msg_id:
         try:
-            await message.bot.edit_message_text(
-                chat_id=message.chat.id,
-                message_id=status_msg_id,
-                text=text,
-                reply_markup=kb,
-                parse_mode="HTML",
-            )
-            return
+            await message.bot.delete_message(chat_id=message.chat.id, message_id=prev_msg_id)
         except Exception:
             pass
 
-    new_msg = await message.answer(text, reply_markup=kb, parse_mode="HTML")
+    # Отправляем свежее сообщение в самом низу и активируем нижнюю панель
+    new_msg = await message.answer(text, reply_markup=inline_kb, parse_mode="HTML")
     batch_queue.set_status_message(user_id, new_msg.message_id)
+
+    # Обновляем нижнюю панель в Telegram (над полем ввода)
+    try:
+        await message.answer(
+            f"Кнопка запуска обновлена внизу экрана 👇",
+            reply_markup=reply_kb,
+        )
+    except Exception:
+        pass
 
 
 @router.message(F.photo)
@@ -126,7 +132,6 @@ async def handle_incoming_photo(
     user_id = message.from_user.id
     settings = await db.get_user_settings(user_id)
 
-    # Собираем список файлов
     incoming_items: List[tuple[str, str]] = []
     if album and len(album) > 1:
         for idx, msg in enumerate(album):
@@ -138,14 +143,21 @@ async def handle_incoming_photo(
     if not incoming_items:
         return
 
-    # Если включен режим «По подтверждению»
+    # 1. Режим «По подтверждению»
     if settings.process_mode == "confirm":
         total_count = batch_queue.add_items(user_id, incoming_items, message.chat.id)
         await update_or_send_queue_card(message, user_id, total_count)
         return
 
-    # Режим «Сразу»
-    await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+    # 2. Режим «Сразу»: мгновенное подтверждение приема
+    status_msg = await message.answer("Фото приняты, обрабатываю...")
+    try:
+        await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+    finally:
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
 
 @router.message(F.document)
@@ -178,7 +190,15 @@ async def handle_incoming_document(
         await update_or_send_queue_card(message, user_id, total_count)
         return
 
-    await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+    # Режим «Сразу»: мгновенное уведомление
+    status_msg = await message.answer("Файлы приняты, обрабатываю...")
+    try:
+        await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+    finally:
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
 
 
 async def process_and_dispatch_items(
@@ -222,8 +242,7 @@ async def process_and_dispatch_items(
                 original_filename=fname,
             )
             processed_items.append(item_res)
-        except Exception as e:
-            # Не прерываем весь батч при ошибке в одном поврежденном файле
+        except Exception:
             pass
 
     # Отправка результатов
@@ -236,9 +255,43 @@ async def process_and_dispatch_items(
             pass
 
 
+# ==================== ОБРАБОТЧИКИ ЗАПУСКА ОЧЕРЕДИ ====================
+
+@router.message(F.text.startswith("🚀 Обработать"))
+async def handle_reply_batch_start(message: Message, bot: Bot):
+    """Запуск обработки по нажатию нижней кнопки в поле ввода."""
+    user_id = message.from_user.id
+    items = batch_queue.pop_all(user_id)
+
+    if not items:
+        await message.answer("Очередь пуста.", reply_markup=get_remove_kb())
+        return
+
+    status_msg = await message.answer(
+        f"⚙️ <b>Обработка: 0 / {len(items)}</b>...",
+        parse_mode="HTML",
+        reply_markup=get_remove_kb(),
+    )
+    await process_and_dispatch_items(
+        bot=bot,
+        chat_id=message.chat.id,
+        user_id=user_id,
+        items=items,
+        status_message=status_msg,
+    )
+
+
+@router.message(F.text == "🗑 Очистить очередь")
+async def handle_reply_batch_clear(message: Message):
+    """Очистка очереди по нажатию нижней кнопки."""
+    user_id = message.from_user.id
+    batch_queue.clear(user_id)
+    await message.answer("Очередь очищена.", reply_markup=get_remove_kb())
+
+
 @router.callback_query(F.data == "batch:start")
 async def cb_start_batch(callback: CallbackQuery, bot: Bot):
-    """Запуск обработки очереди пользователем."""
+    """Запуск обработки инлайн-кнопкой."""
     user_id = callback.from_user.id
     items = batch_queue.pop_all(user_id)
 
@@ -251,6 +304,12 @@ async def cb_start_batch(callback: CallbackQuery, bot: Bot):
         f"⚙️ <b>Обработка: 0 / {len(items)}</b>...",
         parse_mode="HTML",
     )
+    # Убираем нижнюю панель
+    try:
+        await callback.message.answer("Запуск...", reply_markup=get_remove_kb())
+    except Exception:
+        pass
+
     await process_and_dispatch_items(
         bot=bot,
         chat_id=callback.message.chat.id,
@@ -262,11 +321,15 @@ async def cb_start_batch(callback: CallbackQuery, bot: Bot):
 
 @router.callback_query(F.data == "batch:clear")
 async def cb_clear_batch(callback: CallbackQuery):
-    """Очистка очереди пользователем."""
+    """Очистка очереди инлайн-кнопкой."""
     user_id = callback.from_user.id
     batch_queue.clear(user_id)
     try:
         await callback.message.edit_text("Очередь очищена.")
+    except Exception:
+        pass
+    try:
+        await callback.message.answer("Очередь очищена.", reply_markup=get_remove_kb())
     except Exception:
         pass
     await callback.answer("Очередь очищена.")

@@ -2,10 +2,11 @@
 
 import asyncio
 import io
+from pathlib import Path
 from typing import List, Optional
 from aiogram import Router, F, Bot
 from aiogram.enums import ChatAction
-from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaDocument
+from aiogram.types import Message, CallbackQuery, BufferedInputFile, InputMediaDocument, FSInputFile
 
 from src.database.db import db
 from src.keyboards.reply import get_batch_reply_kb, get_remove_kb
@@ -17,6 +18,53 @@ router = Router(name="image_processing")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 MAX_MEDIA_GROUP_SIZE = 10  # Ограничение Telegram Bot API на размер медиагруппы
 CONCURRENCY_LIMIT = 2     # Ограничение параллельных задач для защиты оперативной памяти (100+ фото)
+
+SUBWAY_GIF_PATH = Path(__file__).resolve().parent.parent.parent / "assets" / "subway.gif"
+_cached_subway_file_id: Optional[str] = None
+
+
+async def send_processing_status_animation(
+    bot: Bot,
+    chat_id: int,
+    caption: str,
+    reply_markup=None,
+) -> Message:
+    """Отправляет gif subway.gif со статусом обработки (с кэшированием file_id)."""
+    global _cached_subway_file_id
+
+    if _cached_subway_file_id:
+        try:
+            return await bot.send_animation(
+                chat_id=chat_id,
+                animation=_cached_subway_file_id,
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+        except Exception:
+            _cached_subway_file_id = None
+
+    if SUBWAY_GIF_PATH.exists():
+        try:
+            msg = await bot.send_animation(
+                chat_id=chat_id,
+                animation=FSInputFile(str(SUBWAY_GIF_PATH)),
+                caption=caption,
+                parse_mode="HTML",
+                reply_markup=reply_markup,
+            )
+            if msg.animation and msg.animation.file_id:
+                _cached_subway_file_id = msg.animation.file_id
+            return msg
+        except Exception:
+            pass
+
+    return await bot.send_message(
+        chat_id=chat_id,
+        text=caption,
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+    )
 
 
 async def process_single_image_with_semaphore(
@@ -156,7 +204,11 @@ async def handle_incoming_photo(
     # 2. Режим «Сразу»: статусное сообщение с прогрессом и автоудалением
     total_items = len(incoming_items)
     init_status = format_progress_text(0, total_items) if total_items > 1 else "⚡ <b>Обработка фото...</b>"
-    status_msg = await message.answer(init_status, parse_mode="HTML")
+    status_msg = await send_processing_status_animation(
+        bot=bot,
+        chat_id=message.chat.id,
+        caption=init_status,
+    )
     try:
         await process_and_dispatch_items(
             bot=bot,
@@ -205,7 +257,11 @@ async def handle_incoming_document(
     # Режим «Сразу»
     total_items = len(incoming_items)
     init_status = format_progress_text(0, total_items) if total_items > 1 else "⚡ <b>Обработка документа...</b>"
-    status_msg = await message.answer(init_status, parse_mode="HTML")
+    status_msg = await send_processing_status_animation(
+        bot=bot,
+        chat_id=message.chat.id,
+        caption=init_status,
+    )
     try:
         await process_and_dispatch_items(
             bot=bot,
@@ -241,10 +297,16 @@ async def process_and_dispatch_items(
     for idx, (file_id, fname) in enumerate(items, 1):
         if status_message and total > 1 and (idx % 3 == 0 or idx == total or total <= 6):
             try:
-                await status_message.edit_text(
-                    format_progress_text(idx, total),
-                    parse_mode="HTML",
-                )
+                if status_message.animation or status_message.caption is not None:
+                    await status_message.edit_caption(
+                        caption=format_progress_text(idx, total),
+                        parse_mode="HTML",
+                    )
+                else:
+                    await status_message.edit_text(
+                        format_progress_text(idx, total),
+                        parse_mode="HTML",
+                    )
             except Exception:
                 pass
 
@@ -300,9 +362,10 @@ async def handle_reply_batch_start(message: Message, bot: Bot):
         await message.answer("Очередь пуста.", reply_markup=get_remove_kb())
         return
 
-    status_msg = await message.answer(
-        format_progress_text(0, len(items)),
-        parse_mode="HTML",
+    status_msg = await send_processing_status_animation(
+        bot=bot,
+        chat_id=message.chat.id,
+        caption=format_progress_text(0, len(items)),
         reply_markup=get_remove_kb(),
     )
     await process_and_dispatch_items(
@@ -350,9 +413,15 @@ async def cb_start_batch(callback: CallbackQuery, bot: Bot):
         return
 
     await callback.answer("Начинаю обработку...")
-    status_msg = await callback.message.edit_text(
-        format_progress_text(0, len(items)),
-        parse_mode="HTML",
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    status_msg = await send_processing_status_animation(
+        bot=bot,
+        chat_id=callback.message.chat.id,
+        caption=format_progress_text(0, len(items)),
     )
     await process_and_dispatch_items(
         bot=bot,

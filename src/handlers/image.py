@@ -90,6 +90,21 @@ async def send_processed_documents(
             await asyncio.sleep(0.6)
 
 
+def format_progress_text(current: int, total: int) -> str:
+    """Генерирует аккуратный прогресс-бар для пакетной обработки."""
+    if total <= 1:
+        return "⚡ <b>Обработка фото...</b>"
+
+    percent = int((current / total) * 100) if total > 0 else 0
+    bar_length = 8
+    filled = int(bar_length * current / total) if total > 0 else 0
+    bar = "▰" * filled + "▱" * (bar_length - filled)
+    return (
+        f"⚡ <b>Обработка: {current} из {total} фото ({percent}%)</b>\n"
+        f"<code>[{bar}]</code>"
+    )
+
+
 async def update_bottom_queue_menu(message: Message, user_id: int, count: int):
     """Обновляет нижнюю панель кнопок и держит единственное лаконичное сообщение внизу."""
     reply_kb = get_batch_reply_kb(count)
@@ -97,8 +112,9 @@ async def update_bottom_queue_menu(message: Message, user_id: int, count: int):
 
     # Отправляем одно единственное сообщение с закреплением нижней панели
     new_msg = await message.answer(
-        f"В очереди: {count} фото",
+        f"📥 В очереди: <b>{count} фото</b>",
         reply_markup=reply_kb,
+        parse_mode="HTML",
     )
     batch_queue.set_status_message(user_id, new_msg.message_id)
 
@@ -137,10 +153,18 @@ async def handle_incoming_photo(
         await update_bottom_queue_menu(message, user_id, total_count)
         return
 
-    # 2. Режим «Сразу»: мгновенное уведомление с автоудалением
-    status_msg = await message.answer("Фото приняты, обрабатываю...")
+    # 2. Режим «Сразу»: статусное сообщение с прогрессом и автоудалением
+    total_items = len(incoming_items)
+    init_status = format_progress_text(0, total_items) if total_items > 1 else "⚡ <b>Обработка фото...</b>"
+    status_msg = await message.answer(init_status, parse_mode="HTML")
     try:
-        await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+        await process_and_dispatch_items(
+            bot=bot,
+            chat_id=message.chat.id,
+            user_id=user_id,
+            items=incoming_items,
+            status_message=status_msg,
+        )
     finally:
         try:
             await status_msg.delete()
@@ -179,9 +203,17 @@ async def handle_incoming_document(
         return
 
     # Режим «Сразу»
-    status_msg = await message.answer("Файлы приняты, обрабатываю...")
+    total_items = len(incoming_items)
+    init_status = format_progress_text(0, total_items) if total_items > 1 else "⚡ <b>Обработка документа...</b>"
+    status_msg = await message.answer(init_status, parse_mode="HTML")
     try:
-        await process_and_dispatch_items(bot, message.chat.id, user_id, incoming_items)
+        await process_and_dispatch_items(
+            bot=bot,
+            chat_id=message.chat.id,
+            user_id=user_id,
+            items=incoming_items,
+            status_message=status_msg,
+        )
     finally:
         try:
             await status_msg.delete()
@@ -207,10 +239,10 @@ async def process_and_dispatch_items(
     await bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
 
     for idx, (file_id, fname) in enumerate(items, 1):
-        if status_message and (idx % 5 == 0 or idx == total or total <= 5):
+        if status_message and total > 1 and (idx % 3 == 0 or idx == total or total <= 6):
             try:
                 await status_message.edit_text(
-                    f"⚙️ <b>Обработка: {idx} / {total}</b>...",
+                    format_progress_text(idx, total),
                     parse_mode="HTML",
                 )
             except Exception:
@@ -269,7 +301,7 @@ async def handle_reply_batch_start(message: Message, bot: Bot):
         return
 
     status_msg = await message.answer(
-        f"⚙️ <b>Обработка: 0 / {len(items)}</b>...",
+        format_progress_text(0, len(items)),
         parse_mode="HTML",
         reply_markup=get_remove_kb(),
     )
@@ -299,7 +331,7 @@ async def handle_reply_batch_clear(message: Message, bot: Bot):
         except Exception:
             pass
 
-    temp = await message.answer("Очередь очищена.", reply_markup=get_remove_kb())
+    temp = await message.answer("🗑 <b>Очередь фото очищена.</b>", reply_markup=get_remove_kb(), parse_mode="HTML")
     await asyncio.sleep(2)
     try:
         await temp.delete()
@@ -319,7 +351,7 @@ async def cb_start_batch(callback: CallbackQuery, bot: Bot):
 
     await callback.answer("Начинаю обработку...")
     status_msg = await callback.message.edit_text(
-        f"⚙️ <b>Обработка: 0 / {len(items)}</b>...",
+        format_progress_text(0, len(items)),
         parse_mode="HTML",
     )
     await process_and_dispatch_items(
@@ -337,7 +369,7 @@ async def cb_clear_batch(callback: CallbackQuery):
     user_id = callback.from_user.id
     batch_queue.clear(user_id)
     try:
-        await callback.message.edit_text("Очередь очищена.")
+        await callback.message.edit_text("🗑 <b>Очередь фото очищена.</b>", parse_mode="HTML")
     except Exception:
         pass
     await callback.answer("Очередь очищена.")

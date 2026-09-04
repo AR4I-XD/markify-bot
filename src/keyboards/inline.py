@@ -4,10 +4,10 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from src.database.models import UserSettings
 
 POSITION_NAMES = {
-    "bottom_right": "↘️ Правый нижний",
-    "bottom_left": "↙️ Левый нижний",
-    "top_right": "↗️ Правый верхний",
-    "top_left": "↖️ Левый верхний",
+    "bottom_right": "↘️ Снизу справа",
+    "bottom_left": "↙️ Снизу слева",
+    "top_left": "↖️ Сверху слева",
+    "top_right": "↗️ Сверху справа",
 }
 
 SCALE_NAMES = {
@@ -18,53 +18,53 @@ SCALE_NAMES = {
 
 
 def get_main_menu_kb() -> InlineKeyboardMarkup:
-    """Компактное главное меню."""
+    """Сбалансированное главное меню."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
-                InlineKeyboardButton(text="🎨 Свой логотип", callback_data="logo:upload"),
+                InlineKeyboardButton(text="👁 Превью", callback_data="logo:preview"),
             ],
             [
-                InlineKeyboardButton(text="👁 Превью", callback_data="logo:preview"),
-                InlineKeyboardButton(text="ℹ️ Помощь", callback_data="menu:help"),
+                InlineKeyboardButton(text="🎨 Загрузить лого", callback_data="logo:upload"),
+                InlineKeyboardButton(text="ℹ️ Справка", callback_data="menu:help"),
             ],
         ]
     )
 
 
 def get_settings_kb(settings: UserSettings) -> InlineKeyboardMarkup:
-    """Лаконичное меню настроек."""
-    color_status = "Вкл" if settings.auto_color else "Выкл"
-    mode_status = "⚡ Сразу" if settings.process_mode == "auto" else "⏳ По кнопке"
-    pos_label = POSITION_NAMES.get(settings.logo_position, "↘️ Правый нижний")
-    scale_label = SCALE_NAMES.get(settings.logo_scale, "18%")
-    opacity_label = f"{settings.logo_opacity}%"
+    """Лаконичное и отзывчивое меню настроек с оптимальной длиной кнопок."""
+    color_badge = "Вкл ✅" if settings.auto_color else "Выкл ❌"
+    mode_badge = "⚡ Сразу" if settings.process_mode == "auto" else "⏳ По кнопке"
+    pos_label = POSITION_NAMES.get(settings.logo_position, "↘️ Снизу справа")
+    scale_val = {"small": "14%", "medium": "18%", "large": "25%"}.get(settings.logo_scale, "18%")
+    opacity_val = f"{settings.logo_opacity}%"
 
     keyboard = [
         [
             InlineKeyboardButton(
-                text=f"Режим: {mode_status}",
+                text=f"Режим: {mode_badge}",
                 callback_data="toggle:processmode",
             ),
             InlineKeyboardButton(
-                text=f"Автокоррекция: {color_status}",
+                text=f"Автоцвет: {color_badge}",
                 callback_data="toggle:autocolor",
             ),
         ],
         [
             InlineKeyboardButton(
-                text=f"Угол: {pos_label}",
+                text=f"Положение: {pos_label}",
                 callback_data="cycle:position",
             )
         ],
         [
             InlineKeyboardButton(
-                text=f"Размер: {scale_label}",
+                text=f"Размер: {scale_val}",
                 callback_data="cycle:scale",
             ),
             InlineKeyboardButton(
-                text=f"Прозрачность: {opacity_label}",
+                text=f"Прозрачность: {opacity_val}",
                 callback_data="cycle:opacity",
             ),
         ],
@@ -83,10 +83,34 @@ def get_settings_kb(settings: UserSettings) -> InlineKeyboardMarkup:
         ])
 
     keyboard.append([
-        InlineKeyboardButton(text="🔙 Назад", callback_data="menu:main")
+        InlineKeyboardButton(text="◀️ В главное меню", callback_data="menu:main")
     ])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+
+def get_preview_nav_kb() -> InlineKeyboardMarkup:
+    """Навигация под фото превью."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
+                InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main"),
+            ]
+        ]
+    )
+
+
+def get_help_kb() -> InlineKeyboardMarkup:
+    """Навигация для экрана помощи/справки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="⚙️ Настройки", callback_data="menu:settings"),
+                InlineKeyboardButton(text="🏠 В главное меню", callback_data="menu:main"),
+            ]
+        ]
+    )
 
 
 def get_batch_confirm_kb(count: int) -> InlineKeyboardMarkup:
@@ -113,15 +137,12 @@ def get_cancel_upload_kb() -> InlineKeyboardMarkup:
     """Отмена загрузки логотипа."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Отмена", callback_data="logo:cancel_upload")]
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="logo:cancel_upload")]
         ]
     )
 
 
 def get_back_to_settings_kb() -> InlineKeyboardMarkup:
-    """Возврат в настройки."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="⚙️ К настройкам", callback_data="menu:settings")]
-        ]
-    )
+    """Возврат в настройки (для обратной совместимости)."""
+    return get_preview_nav_kb()
+

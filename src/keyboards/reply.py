@@ -17,6 +17,7 @@ def get_batch_reply_kb(count: int) -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         is_persistent=True,
         one_time_keyboard=False,
+        input_field_placeholder="Нажмите «🚀 Обработать» для запуска...",
     )
 
 

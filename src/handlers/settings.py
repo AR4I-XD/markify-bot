@@ -13,7 +13,7 @@ from src.database.models import UserSettings
 from src.keyboards.inline import (
     POSITION_NAMES,
     SCALE_NAMES,
-    get_back_to_settings_kb,
+    get_preview_nav_kb,
     get_cancel_upload_kb,
     get_settings_kb,
 )
@@ -28,17 +28,19 @@ class UploadLogoStates(StatesGroup):
 
 def format_settings_text(settings: UserSettings) -> str:
     logo_type = "Пользовательский" if settings.has_custom_logo else "Стандартный"
-    color_type = "Вкл" if settings.auto_color else "Выкл"
-    pos_type = POSITION_NAMES.get(settings.logo_position, "Правый нижний")
-    scale_type = SCALE_NAMES.get(settings.logo_scale, "18%")
+    mode_type = "⚡ Сразу при отправке" if settings.process_mode == "auto" else "⏳ По кнопке запуска"
+    pos_type = POSITION_NAMES.get(settings.logo_position, "↘️ Снизу справа")
+    scale_type = SCALE_NAMES.get(settings.logo_scale, "18% (Стандарт)")
+    color_type = "Включена" if settings.auto_color else "Выключена"
 
     return (
-        "<b>Настройки брендирования:</b>\n\n"
-        f"• Логотип: <b>{logo_type}</b>\n"
-        f"• Положение: <b>{pos_type}</b>\n"
-        f"• Размер: <b>{scale_type}</b>\n"
+        "⚙️ <b>Параметры брендирования:</b>\n\n"
+        f"• Режим запуска: <b>{mode_type}</b>\n"
+        f"• Положение лого: <b>{pos_type}</b>\n"
+        f"• Размер лого: <b>{scale_type}</b>\n"
         f"• Прозрачность: <b>{settings.logo_opacity}%</b>\n"
-        f"• Автокоррекция: <b>{color_type}</b>"
+        f"• Автокоррекция: <b>{color_type}</b>\n"
+        f"• Активный логотип: <b>{logo_type}</b>"
     )
 
 
@@ -82,7 +84,7 @@ async def cb_toggle_processmode(callback: CallbackQuery):
     new_mode = "confirm" if settings.process_mode == "auto" else "auto"
     updated_settings = await db.update_settings(callback.from_user.id, process_mode=new_mode)
     await send_or_edit_settings(callback, updated_settings)
-    mode_text = "По подтверждению (кнопкой)" if new_mode == "confirm" else "Сразу при отправке"
+    mode_text = "⏳ По кнопке запуска" if new_mode == "confirm" else "⚡ Сразу при отправке"
     await callback.answer(f"Режим: {mode_text}")
 
 
@@ -104,7 +106,7 @@ async def cb_toggle_autocolor(callback: CallbackQuery):
     new_status = not settings.auto_color
     updated_settings = await db.update_settings(callback.from_user.id, auto_color=new_status)
     await send_or_edit_settings(callback, updated_settings)
-    await callback.answer(f"Автокоррекция: {'Вкл' if new_status else 'Выкл'}")
+    await callback.answer(f"Автокоррекция: {'Включена ✅' if new_status else 'Выключена ❌'}")
 
 
 @router.callback_query(F.data == "cycle:scale")
@@ -143,13 +145,17 @@ async def cb_delete_logo(callback: CallbackQuery):
 async def cb_start_upload_logo(callback: CallbackQuery, state: FSMContext):
     await state.set_state(UploadLogoStates.waiting_for_logo)
     text = (
-        "<b>Загрузка логотипа:</b>\n\n"
-        "Отправьте изображение или файл (PNG с прозрачным фоном)."
+        "🎨 <b>Загрузка своего логотипа:</b>\n\n"
+        "Отправьте изображение или файл с вашим водяным знаком.\n\n"
+        "💡 <i>Рекомендация: отправляйте файлом (без сжатия) в формате <b>PNG с прозрачным фоном</b> для наилучшего качества.</i>"
     )
     try:
         await callback.message.edit_text(text, reply_markup=get_cancel_upload_kb(), parse_mode="HTML")
     except Exception:
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
         await callback.message.answer(text, reply_markup=get_cancel_upload_kb(), parse_mode="HTML")
     await callback.answer()
 
@@ -159,7 +165,7 @@ async def cb_cancel_upload_logo(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     settings = await db.get_user_settings(callback.from_user.id)
     await send_or_edit_settings(callback, settings)
-    await callback.answer("Отменено")
+    await callback.answer("Загрузка отменена")
 
 
 @router.message(UploadLogoStates.waiting_for_logo, F.document)
@@ -202,10 +208,18 @@ async def handle_logo_upload(message: Message, state: FSMContext, bot: Bot):
 
         preview_file = BufferedInputFile(preview_buf.getvalue(), filename="logo_preview.jpg")
 
+        caption = (
+            "✅ <b>Логотип успешно сохранен и применен!</b>\n\n"
+            f"• Положение: <b>{POSITION_NAMES.get(user_settings.logo_position, '↘️ Снизу справа')}</b>\n"
+            f"• Размер: <b>{SCALE_NAMES.get(user_settings.logo_scale, '18%')}</b>\n"
+            f"• Прозрачность: <b>{user_settings.logo_opacity}%</b>"
+        )
+
         await message.answer_photo(
             photo=preview_file,
-            caption="Логотип успешно сохранен.",
-            reply_markup=get_back_to_settings_kb(),
+            caption=caption,
+            reply_markup=get_preview_nav_kb(),
+            parse_mode="HTML",
         )
     except Exception as e:
         await message.answer(
@@ -241,10 +255,19 @@ async def cb_preview_logo(callback: CallbackQuery):
         except Exception:
             pass
 
+        caption = (
+            "👁 <b>Предпросмотр водяного знака:</b>\n\n"
+            f"• Положение: <b>{POSITION_NAMES.get(settings.logo_position, '↘️ Снизу справа')}</b>\n"
+            f"• Размер: <b>{SCALE_NAMES.get(settings.logo_scale, '18%')}</b>\n"
+            f"• Прозрачность: <b>{settings.logo_opacity}%</b>\n"
+            f"• Логотип: <b>{'Пользовательский' if settings.has_custom_logo else 'Стандартный'}</b>"
+        )
+
         await callback.message.answer_photo(
             photo=preview_file,
-            caption="Превью размещения логотипа:",
-            reply_markup=get_back_to_settings_kb(),
+            caption=caption,
+            reply_markup=get_preview_nav_kb(),
+            parse_mode="HTML",
         )
         await callback.answer()
     except Exception as e:
